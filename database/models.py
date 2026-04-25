@@ -33,7 +33,10 @@ class User(Base):
     age_min       = Column(Integer,    default=14)
     age_max       = Column(Integer,    default=99)
 
-    # Язык интерфейса — хранится в БД, не теряется при рестарте
+    # Фильтр возраста в поиске (Premium) — отдельно от age_min/age_max в browse
+    search_age_min = Column(Integer, nullable=True)
+    search_age_max = Column(Integer, nullable=True)
+
     lang          = Column(String(4), default="ru", nullable=False)
 
     verification_status = Column(String(16), default="none")
@@ -48,13 +51,18 @@ class User(Base):
     boost_until   = Column(DateTime, nullable=True)
     referral_code = Column(String(32), unique=True, nullable=True)
 
-    tags           = relationship("Tag",      secondary=user_tags, back_populates="users")
-    likes_sent     = relationship("Like",     foreign_keys="Like.from_user_id", back_populates="from_user")
-    likes_received = relationship("Like",     foreign_keys="Like.to_user_id",   back_populates="to_user")
-    reports_sent   = relationship("Report",   foreign_keys="Report.reporter_id", back_populates="reporter")
-    premium        = relationship("Premium",  back_populates="user", uselist=False)
-    favorites_sent = relationship("Favorite", foreign_keys="Favorite.user_id",   back_populates="user")
-    referrals_sent = relationship("Referral", foreign_keys="Referral.inviter_id", back_populates="inviter")
+    # VIP: раз в месяц можно запросить личку через избранное
+    vip_contact_used = Column(DateTime, nullable=True)
+
+    tags           = relationship("Tag",        secondary=user_tags, back_populates="users")
+    likes_sent     = relationship("Like",       foreign_keys="Like.from_user_id",    back_populates="from_user")
+    likes_received = relationship("Like",       foreign_keys="Like.to_user_id",      back_populates="to_user")
+    reports_sent   = relationship("Report",     foreign_keys="Report.reporter_id",   back_populates="reporter")
+    premium        = relationship("Premium",    back_populates="user", uselist=False)
+    vip_premium    = relationship("VipPremium", back_populates="user", uselist=False)
+    favorites_sent = relationship("Favorite",   foreign_keys="Favorite.user_id",     back_populates="user")
+    referrals_sent = relationship("Referral",   foreign_keys="Referral.inviter_id",  back_populates="inviter")
+    blacklist_sent = relationship("BlackList",  foreign_keys="BlackList.user_id",    back_populates="user")
 
 
 class Tag(Base):
@@ -62,7 +70,7 @@ class Tag(Base):
 
     id       = Column(Integer,    primary_key=True, autoincrement=True)
     name     = Column(String(64), unique=True, nullable=False)
-    name_uz  = Column(String(64), nullable=True)   # узбекский вариант названия
+    name_uz  = Column(String(64), nullable=True)
     emoji    = Column(String(8),  nullable=True)
     category = Column(String(32), nullable=True)
 
@@ -72,7 +80,7 @@ class Tag(Base):
 class Like(Base):
     __tablename__ = "likes"
 
-    id           = Column(Integer,   primary_key=True, autoincrement=True)
+    id           = Column(Integer,    primary_key=True, autoincrement=True)
     from_user_id = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
     to_user_id   = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
     is_match     = Column(Boolean, default=False)
@@ -82,10 +90,19 @@ class Like(Base):
     to_user   = relationship("User", foreign_keys=[to_user_id],   back_populates="likes_received")
 
 
+class ProfileView(Base):
+    __tablename__ = "profile_views"
+
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
+    viewer_id  = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
+    target_id  = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
+    viewed_at  = Column(DateTime,   server_default=func.now(), onupdate=func.now())
+
+
 class Report(Base):
     __tablename__ = "reports"
 
-    id          = Column(Integer,   primary_key=True, autoincrement=True)
+    id          = Column(Integer,    primary_key=True, autoincrement=True)
     reporter_id = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
     target_id   = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
     reason      = Column(String(128), nullable=False)
@@ -99,7 +116,7 @@ class Report(Base):
 class ActivityLog(Base):
     __tablename__ = "activity_log"
 
-    id         = Column(Integer,   primary_key=True, autoincrement=True)
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
     user_id    = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
     action     = Column(String(64), nullable=False)
     points     = Column(Integer,   default=0)
@@ -109,7 +126,7 @@ class ActivityLog(Base):
 class Premium(Base):
     __tablename__ = "premium"
 
-    id         = Column(Integer,   primary_key=True, autoincrement=True)
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
     user_id    = Column(BigInteger, ForeignKey("users.telegram_id"), unique=True, nullable=False)
     expires_at = Column(DateTime,  nullable=False)
     source     = Column(String(32), default="purchase")
@@ -118,10 +135,23 @@ class Premium(Base):
     user = relationship("User", back_populates="premium")
 
 
+class VipPremium(Base):
+    """VIP Premium — 3 000 000 сум/год. Даёт одну личку в месяц через избранное."""
+    __tablename__ = "vip_premium"
+
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
+    user_id    = Column(BigInteger, ForeignKey("users.telegram_id"), unique=True, nullable=False)
+    expires_at = Column(DateTime,  nullable=False)
+    source     = Column(String(32), default="purchase")
+    created_at = Column(DateTime,  server_default=func.now())
+
+    user = relationship("User", back_populates="vip_premium")
+
+
 class Favorite(Base):
     __tablename__ = "favorites"
 
-    id         = Column(Integer,   primary_key=True, autoincrement=True)
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
     user_id    = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
     target_id  = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
     created_at = Column(DateTime,  server_default=func.now())
@@ -133,13 +163,30 @@ class Favorite(Base):
 class Referral(Base):
     __tablename__ = "referrals"
 
-    id         = Column(Integer,   primary_key=True, autoincrement=True)
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
     inviter_id = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
     invitee_id = Column(BigInteger, ForeignKey("users.telegram_id"), unique=True, nullable=False)
     created_at = Column(DateTime,  server_default=func.now())
 
     inviter = relationship("User", foreign_keys=[inviter_id], back_populates="referrals_sent")
     invitee = relationship("User", foreign_keys=[invitee_id])
+
+
+class BlackList(Base):
+    """
+    Чёрный список (только Premium).
+    Пользователь user_id блокирует target_id —
+    они больше не будут показываться друг другу в ленте и поиске.
+    """
+    __tablename__ = "blacklist"
+
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
+    user_id    = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
+    target_id  = Column(BigInteger, ForeignKey("users.telegram_id"), nullable=False)
+    created_at = Column(DateTime,  server_default=func.now())
+
+    user   = relationship("User", foreign_keys=[user_id], back_populates="blacklist_sent")
+    target = relationship("User", foreign_keys=[target_id])
 
 
 async def init_db():

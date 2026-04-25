@@ -1,10 +1,19 @@
 """
 Регистрация нового пользователя.
 Шаги: язык → имя → пол → возраст → город → фото → описание → кого ищу → теги
+
+НОВОЕ: перед регистрацией проверяется подписка на TG-канал @TanishuzTC.
+Инстаграм (@tanishuztc) показывается, но не проверяется (API не позволяет).
+
 После регистрации — онбординг + реферал.
+
+ФИКС: ConversationHandler больше не перехватывает like:/skip:/fav: и другие
+внешние callback'и — они добавлены в fallbacks с немедленным выходом из диалога
+(если диалог не активен) или игнорированием (если активен).
 """
+
 from datetime import datetime, timedelta
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, ConversationHandler, filters, ContextTypes
@@ -24,12 +33,32 @@ LANG, NAME, GENDER, AGE, CITY, PHOTO, ABOUT, LOOKING, TAGS = range(9)
 BOOST_DAYS  = 7
 BOOST_EVERY = 3
 
+TG_CHANNEL_ID  = "@TanishuzTC"
+TG_CHANNEL_URL = "https://t.me/TanishuzTC"
+INSTAGRAM_URL  = "https://www.instagram.com/tanishuztc"
+
 
 def _lang(ctx) -> str:
     return ctx.user_data.get("lang", "ru")
 
 
-# ── Реферал ────────────────────────────────────────────────────────────────
+async def _check_tg_subscription(bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=TG_CHANNEL_ID, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception:
+        return True
+
+
+def _subscription_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📢 Telegram канал", url=TG_CHANNEL_URL),
+            InlineKeyboardButton("📸 Instagram",       url=INSTAGRAM_URL),
+        ],
+        [InlineKeyboardButton("✅ Я подписался", callback_data="check_subscription")],
+    ])
+
 
 async def _apply_referral(inviter_id: int, invitee_id: int):
     async with Session() as s:
@@ -38,28 +67,23 @@ async def _apply_referral(inviter_id: int, invitee_id: int):
         )
         if existing.scalar_one_or_none():
             return 0
-
         s.add(Referral(inviter_id=inviter_id, invitee_id=invitee_id))
         await s.commit()
-
         count_result = await s.execute(
             select(Referral).where(Referral.inviter_id == inviter_id)
         )
         total = len(count_result.scalars().all())
-
         if total % BOOST_EVERY == 0:
             inviter = await s.get(User, inviter_id)
             if inviter:
-                now = datetime.now()
+                now  = datetime.now()
                 base = inviter.boost_until if inviter.boost_until and inviter.boost_until > now else now
                 inviter.boost_until = base + timedelta(days=BOOST_DAYS)
                 await s.commit()
-            return total  # вернуть с бустом
-
         return total
 
 
-# ── Старт ───────────────────────────────────────────────────────────────────
+# ── Старт ────────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args or []
@@ -67,41 +91,58 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["ref_code"] = args[0][4:]
 
     user = await UserService.get_user(update.effective_user.id)
+
     if user:
-        # Уже зарегистрирован — показываем меню без /start
         lang = user.lang
         ctx.user_data["lang"] = lang
+        await update.message.reply_text("👋", reply_markup=main_menu_kb(lang))
         await update.message.reply_text(
             t("home_text", lang),
             parse_mode="HTML",
             reply_markup=home_inline_kb(lang)
         )
-        # Убираем команду /start из меню для этого пользователя
-        await update.get_bot().set_my_commands(
-            [
-                ("language",  "🌐 Изменить язык / Til"),
-                ("complaint", "✉️ Написать админу"),
-            ]
-        )
+        await update.get_bot().set_my_commands([
+            ("language",  "🌐 Изменить язык / Til"),
+            ("complaint", "✉️ Написать админу"),
+        ])
         return ConversationHandler.END
 
-    # Новый пользователь
     await update.message.reply_text(
-        t("reg_welcome", "ru"),
+        "👋 Добро пожаловать в <b>Tanishuz</b>!\n\n"
+        "Перед началом, пожалуйста, подпишитесь на наши каналы:\n\n"
+        "📢 <b>Telegram:</b> обязательно\n"
+        "📸 <b>Instagram:</b> @tanishuztc (по желанию)\n\n"
+        "После подписки нажмите <b>✅ Я подписался</b>",
         parse_mode="HTML",
-        reply_markup=language_kb()
+        reply_markup=_subscription_kb()
     )
     return LANG
-    # Новый пользователь — сначала выбор языка
-    await update.message.reply_text(
-        t("reg_welcome", "ru"),   # показываем двуязычное приветствие
+
+
+# ── Проверка подписки ─────────────────────────────────────────────────────────
+
+async def check_subscription(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    is_subscribed = await _check_tg_subscription(query.get_bot(), update.effective_user.id)
+    if not is_subscribed:
+        await query.answer(
+            "❌ Вы ещё не подписались на Telegram-канал!\nПодпишитесь и попробуйте снова.",
+            show_alert=True
+        )
+        return LANG
+
+    await query.message.reply_text(
+        "✅ <b>Подписка подтверждена!</b>\n\n"
+        "🌐 Выбери язык / Tilni tanlang:",
         parse_mode="HTML",
         reply_markup=language_kb()
     )
     return LANG
 
 
-# ── Шаг 0: Язык ─────────────────────────────────────────────────────────────
+# ── Шаг 0: Язык ──────────────────────────────────────────────────────────────
 
 async def get_lang(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -112,7 +153,7 @@ async def get_lang(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return NAME
 
 
-# ── Шаг 1: Имя ──────────────────────────────────────────────────────────────
+# ── Шаг 1: Имя ───────────────────────────────────────────────────────────────
 
 async def get_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = _lang(ctx)
@@ -124,7 +165,7 @@ async def get_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return GENDER
 
 
-# ── Шаг 2: Пол ──────────────────────────────────────────────────────────────
+# ── Шаг 2: Пол ───────────────────────────────────────────────────────────────
 
 async def get_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -135,7 +176,7 @@ async def get_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return AGE
 
 
-# ── Шаг 3: Возраст ──────────────────────────────────────────────────────────
+# ── Шаг 3: Возраст ───────────────────────────────────────────────────────────
 
 async def get_age(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = _lang(ctx)
@@ -151,7 +192,7 @@ async def get_age(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return CITY
 
 
-# ── Шаг 4: Город ────────────────────────────────────────────────────────────
+# ── Шаг 4: Город ─────────────────────────────────────────────────────────────
 
 async def get_city(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = _lang(ctx)
@@ -160,7 +201,7 @@ async def get_city(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return PHOTO
 
 
-# ── Шаг 5: Фото ─────────────────────────────────────────────────────────────
+# ── Шаг 5: Фото ──────────────────────────────────────────────────────────────
 
 async def get_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = _lang(ctx)
@@ -172,7 +213,7 @@ async def get_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ABOUT
 
 
-# ── Шаг 6: О себе ───────────────────────────────────────────────────────────
+# ── Шаг 6: О себе ────────────────────────────────────────────────────────────
 
 async def get_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = _lang(ctx)
@@ -182,7 +223,7 @@ async def get_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return LOOKING
 
 
-# ── Шаг 7: Кого ищу ─────────────────────────────────────────────────────────
+# ── Шаг 7: Кого ищу ──────────────────────────────────────────────────────────
 
 async def get_looking(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -203,7 +244,7 @@ async def get_looking(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def toggle_tag(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    lang = _lang(ctx)
+    lang   = _lang(ctx)
     tag_id = int(query.data.split(":")[1])
     selected = ctx.user_data.setdefault("selected_tags", set())
     if tag_id in selected:
@@ -215,7 +256,8 @@ async def toggle_tag(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return TAGS
 
 
-# ── Шаг 8: Теги — готово / создание профиля ──────────────────────────────────
+# ── Шаг 8: Теги — готово ─────────────────────────────────────────────────────
+
 async def finish_tags(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -236,7 +278,7 @@ async def finish_tags(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lang=lang,
     )
 
-    ctx.user_data["lang"] = lang  # ← сохраняем язык
+    ctx.user_data["lang"] = lang
 
     await query.message.reply_text(
         t("reg_done", lang, name=user.name),
@@ -245,7 +287,6 @@ async def finish_tags(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text(t("onboarding_1", lang), parse_mode="HTML")
     await query.message.reply_text(t("onboarding_2", lang), parse_mode="HTML")
 
-    # Реферал
     ref_code = data.get("ref_code")
     if ref_code:
         async with Session() as s:
@@ -254,24 +295,22 @@ async def finish_tags(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 sa_select(User).where(User.referral_code == ref_code)
             )
             inviter = result.scalar_one_or_none()
+            if inviter and inviter.telegram_id != user.telegram_id:
+                total = await _apply_referral(inviter.telegram_id, user.telegram_id)
+                boost_msg = ""
+                if total and total % BOOST_EVERY == 0:
+                    inviter_lang = inviter.lang or "ru"
+                    boost_msg = t("referral_boost_earned", inviter_lang, days=BOOST_DAYS)
+                try:
+                    inviter_lang = inviter.lang or "ru"
+                    await query.get_bot().send_message(
+                        inviter.telegram_id,
+                        t("referral_invited", inviter_lang, count=total, boost=boost_msg),
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
 
-        if inviter and inviter.telegram_id != user.telegram_id:
-            total = await _apply_referral(inviter.telegram_id, user.telegram_id)
-            boost_msg = ""
-            if total and total % BOOST_EVERY == 0:
-                inviter_lang = inviter.lang or "ru"
-                boost_msg = t("referral_boost_earned", inviter_lang, days=BOOST_DAYS)
-            try:
-                inviter_lang = inviter.lang or "ru"
-                await query.get_bot().send_message(
-                    inviter.telegram_id,
-                    t("referral_invited", inviter_lang, count=total, boost=boost_msg),
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-
-    # Убираем /start из команд после регистрации
     try:
         await query.get_bot().set_my_commands([
             ("language",  "🌐 Изменить язык / Til"),
@@ -281,7 +320,9 @@ async def finish_tags(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
 
     return ConversationHandler.END
-# ── Отмена ───────────────────────────────────────────────────────────────────
+
+
+# ── Отмена ────────────────────────────────────────────────────────────────────
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = _lang(ctx)
@@ -289,25 +330,39 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ── Регистрация хендлеров ─────────────────────────────────────────────────────
-from telegram.ext import MessageHandler, filters
+# ── Fallback-заглушка: завершает диалог без действия ─────────────────────────
 
-async def _menu_fallback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Если пользователь нажал кнопку меню во время регистрации — выходим из диалога."""
+async def _noop_fallback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Вызывается когда ConversationHandler поймал update во время регистрации,
+    но это не шаг регистрации (например, like:/skip:/fav: от старых сообщений).
+    Просто отвечаем на callback чтобы кнопка не зависала, состояние не меняем.
+    """
+    if update.callback_query:
+        await update.callback_query.answer()
     return ConversationHandler.END
 
+
+async def _menu_fallback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    return ConversationHandler.END
+
+
+# ── Регистрация хендлеров ─────────────────────────────────────────────────────
 
 def register_handlers(app: Application):
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
         states={
-            LANG: [CallbackQueryHandler(get_lang, pattern="^lang:")],
-            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            GENDER: [CallbackQueryHandler(get_gender, pattern="^gender:")],
-            AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)],
-            CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_city)],
-            PHOTO: [MessageHandler(filters.PHOTO, get_photo)],
-            ABOUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_about)],
+            LANG: [
+                CallbackQueryHandler(check_subscription, pattern="^check_subscription$"),
+                CallbackQueryHandler(get_lang,           pattern="^lang:"),
+            ],
+            NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            GENDER:  [CallbackQueryHandler(get_gender,  pattern="^gender:")],
+            AGE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)],
+            CITY:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_city)],
+            PHOTO:   [MessageHandler(filters.PHOTO, get_photo)],
+            ABOUT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, get_about)],
             LOOKING: [CallbackQueryHandler(get_looking, pattern="^looking:")],
             TAGS: [
                 CallbackQueryHandler(finish_tags, pattern="^tags:done$"),
@@ -317,7 +372,8 @@ def register_handlers(app: Application):
         fallbacks=[
             CommandHandler("cancel", cancel),
             CommandHandler("start",  cmd_start),
-            # Все кнопки меню выбрасывают из диалога регистрации
+
+            # Кнопки меню завершают диалог
             MessageHandler(
                 filters.Regex(
                     "^(👀 Смотреть анкеты|👀 Anketalarni ko'rish"
@@ -328,6 +384,12 @@ def register_handlers(app: Application):
                 ),
                 _menu_fallback
             ),
+
+            # ВСЕ остальные callback'и (like:, skip:, fav:, home:, profile:,
+            # report:, blacklist:, fav_nav:, premium: и т.д.) —
+            # завершаем диалог и отвечаем на кнопку чтобы не зависала.
+            # После END update передаётся дальше в другие хендлеры.
+            CallbackQueryHandler(_noop_fallback),
         ],
         allow_reentry=True,
         per_message=False,

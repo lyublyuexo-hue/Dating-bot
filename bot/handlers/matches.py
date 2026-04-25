@@ -14,9 +14,7 @@ async def show_matches(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     matches = await MatchService.get_matches(user_id)
 
     if not matches:
-        await update.message.reply_text(
-            t("no_matches", lang)
-        )
+        await update.message.reply_text(t("no_matches", lang))
         return
 
     text = t("matches_title", lang) + "\n\n"
@@ -25,7 +23,6 @@ async def show_matches(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for m in matches:
         other_id = m.to_user_id if m.from_user_id == user_id else m.from_user_id
         other = await UserService.get_user(other_id)
-
         if not other:
             continue
 
@@ -34,27 +31,19 @@ async def show_matches(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                   age=other.age,
                   city=other.city) + "\n"
 
-        # 👉 кнопка если есть username
-        if other.username:
-            buttons.append([
-                InlineKeyboardButton(
-                    t("write_to", lang, name=other.name),
-                    url=f"https://t.me/{other.username}"
-                )
-            ])
-        else:
-            # 👉 fallback если нет username
-            buttons.append([
-                InlineKeyboardButton(
-                    t("no_username", lang),
-                    callback_data="no_username"
-                )
-            ])
+        # Кнопка "Написать" через deep link — работает без username
+        write_label = t("write_to", lang, name=other.name)
+        buttons.append([
+            InlineKeyboardButton(
+                write_label,
+                url=f"tg://user?id={other.telegram_id}"
+            )
+        ])
 
     await update.message.reply_text(
         text,
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
     )
 
 

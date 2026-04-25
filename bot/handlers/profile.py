@@ -10,6 +10,14 @@ from bot.keyboards.main import (
 from bot.i18n import t
 from bot.modules.tags import TagModule
 
+MENU_BUTTONS = {
+    "👀 Смотреть анкеты", "👀 Anketalarni ko'rish",
+    "🔍 Поиск", "🔍 Qidiruv",
+    "⭐ Избранные", "⭐ Sevimlilar",
+    "🔗 Реферал", "🔗 Referal",
+    "👤 Мой профиль", "👤 Mening anketam",
+}
+
 
 async def _get_lang(user_id: int, ctx) -> str:
     lang = ctx.user_data.get("lang")
@@ -117,6 +125,7 @@ async def handle_profile_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action == "delete_confirm":
         await UserService.delete_user(user_id)
+        ctx.user_data.clear()
         await query.message.reply_text(t("profile_deleted", lang))
 
     elif action == "back":
@@ -193,7 +202,6 @@ async def handle_edit_tags_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     selected = list(ctx.user_data.get("selected_tags", set()))
 
-    # Сохраняем теги напрямую через сессию
     from database.models import User, Tag
     from database.session import Session
     from sqlalchemy import select
@@ -228,6 +236,12 @@ async def handle_edit_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
+    # Если пользователь нажал кнопку меню пока был в режиме редактирования —
+    # сбрасываем edit_field и не сохраняем
+    if text in MENU_BUTTONS:
+        ctx.user_data.pop("edit_field", None)
+        return
+
     if field == "age":
         try:
             age = int(text)
@@ -254,10 +268,20 @@ def register_handlers(app: Application):
         filters.Regex("^(👤 Мой профиль|👤 Mening anketam)$"),
         show_profile
     ))
+
     app.add_handler(CallbackQueryHandler(handle_profile_action,  pattern="^profile:"))
     app.add_handler(CallbackQueryHandler(handle_edit_choice,     pattern="^edit:"))
     app.add_handler(CallbackQueryHandler(handle_edit_tag_toggle, pattern="^tag:"))
     app.add_handler(CallbackQueryHandler(handle_edit_tags_done,  pattern="^tags:done$"))
     app.add_handler(CallbackQueryHandler(handle_edit_looking,    pattern="^looking:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_edit_text))
+
+    # Группа 1 — выше приоритетом чем home.py (group=2)
+    # Срабатывает ТОЛЬКО когда edit_field активен
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_text),
+        group=1
+    )
+    app.add_handler(
+        MessageHandler(filters.PHOTO, handle_edit_text),
+        group=1
+    )

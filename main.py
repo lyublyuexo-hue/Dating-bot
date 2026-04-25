@@ -45,19 +45,47 @@ def main():
         .build()
     )
 
-    reg_handlers(app)        # /start — ConversationHandler
-    complaint_handlers(app)  # /complaint
-    admin_handlers(app)      # /admin
-    browse_handlers(app)     # like / skip / report
-    match_handlers(app)      # матчи
-    profile_handlers(app)    # профиль
-    home_handlers(app)       # меню + inline
+    # ✅ ПОРЯДОК КРИТИЧЕСКИ ВАЖЕН:
+    # 1. ConversationHandler (/start) — первым, чтобы перехватывал фото при регистрации
+    reg_handlers(app)
+
+    # 2. Команды
+    complaint_handlers(app)
+    admin_handlers(app)
+
+    # 3. Меню (Reply-кнопки + inline) — ДО profile, чтобы кнопки меню не перехватывались
+    home_handlers(app)
+
+    # 4. Просмотр анкет и матчи
+    browse_handlers(app)
+    match_handlers(app)
+
+    # 5. Профиль — ПОСЛЕДНИМ, его общий filters.TEXT не должен перехватывать кнопки меню
+
+    profile_handlers(app)
 
     app.add_handler(CommandHandler("language", cmd_language))
 
     logger.info("Bot started!")
+
+    async def debug_all(update, ctx):
+        print(f">>> ЛЮБОЕ СООБЩЕНИЕ: {update.message.text if update.message else 'no message'}")
+
+    from telegram.ext import MessageHandler, filters as f2
+    app.add_handler(MessageHandler(f2.ALL, debug_all), group=999),
+
     app.run_polling(drop_pending_updates=True)
 
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logging.getLogger("telegram.ext.ConversationHandler").setLevel(logging.DEBUG)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.DEBUG  # ← меняй INFO на DEBUG
+)
 
 if __name__ == "__main__":
     main()

@@ -1,30 +1,36 @@
 from sqlalchemy import select
-from database.models import User, Tag
+from sqlalchemy.orm import selectinload
+from database.models import User
 from database.session import Session
 
 
 class MutualInterestsModule:
 
     @staticmethod
-    async def get_common_tags(user1_id: int, user2_id: int) -> list[Tag]:
+    async def get_common_tags(user1_id: int, user2_id: int) -> list:
+        """
+        Возвращает общие теги двух пользователей.
+        Загружаем теги внутри сессии через selectinload —
+        иначе lazy load вне сессии вызывает MissingGreenlet.
+        """
         async with Session() as s:
-            u1 = await s.get(User, user1_id)
-            u2 = await s.get(User, user2_id)
+            result1 = await s.execute(
+                select(User).options(selectinload(User.tags))
+                .where(User.telegram_id == user1_id)
+            )
+            result2 = await s.execute(
+                select(User).options(selectinload(User.tags))
+                .where(User.telegram_id == user2_id)
+            )
+            u1 = result1.scalar_one_or_none()
+            u2 = result2.scalar_one_or_none()
+
             if not u1 or not u2:
                 return []
+
             ids1 = {tag.id for tag in u1.tags}
             ids2 = {tag.id for tag in u2.tags}
             common_ids = ids1 & ids2
-            if not common_ids:
-                return []
-            result = await s.execute(
-                select(Tag).where(Tag.id.in_(common_ids))
-            )
-            return result.scalars().all()
 
-    @staticmethod
-    def format_common_tags(tags: list[Tag]) -> str:
-        if not tags:
-            return ""
-        items = " ".join(f"{t.emoji}{t.name}" for t in tags)
-        return f"\n\n🎯 Общие интересы: {items}"
+            # Возвращаем объекты тегов из u1
+            return [tag for tag in u1.tags if tag.id in common_ids]
