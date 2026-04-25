@@ -42,9 +42,11 @@ class MatchService:
 
     @staticmethod
     async def _get_views_today(user_id: int, s) -> int:
+        """Считает уникальные профили просмотренные сегодня.
+        Один профиль сколько бы раз не показывался — считается как 1."""
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         return (await s.execute(
-            select(func.count()).where(
+            select(func.count(func.distinct(ProfileView.target_id))).where(
                 and_(ProfileView.viewer_id == user_id, ProfileView.viewed_at >= today)
             )
         )).scalar()
@@ -136,12 +138,15 @@ class MatchService:
                 )).scalar_one_or_none()
 
             # Уровень 3: показываем вообще всех (даже лайкнутых) — анкеты никогда не кончаются
+            # При уровне 3 не записываем просмотр чтобы не накручивать лимит
             if not profile:
                 profile = (await s.execute(
                     select(User).options(selectinload(User.tags))
                     .where(and_(*conditions(set())))
                     .order_by(boost.desc(), User.activity_score.desc()).limit(1)
                 )).scalar_one_or_none()
+                # Не записываем просмотр для уровня 3
+                return profile
 
             if profile:
                 await MatchService._record_view(s, user_id, profile.telegram_id)
